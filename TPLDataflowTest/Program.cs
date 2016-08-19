@@ -1,7 +1,9 @@
 ﻿using System;
 using System.Collections.Generic;
+using System.Net.Http;
 using System.Threading.Tasks;
 using System.Threading.Tasks.Dataflow;
+using System.Timers;
 using ITCC.Logging.Core;
 using ITCC.Logging.Windows.Loggers;
 
@@ -9,6 +11,7 @@ namespace TPLDataflowTest
 {
     internal class Program
     {
+        private const string BaseUri = @"https://api.vk.com/method/users.get?user_ids=PLACEHOLDER&name_case=Nom&v=5.53&fields=sex,bdate,city,country";
         private static void Main(string[] args) => MainAsync().GetAwaiter().GetResult();
 
         private static async Task MainAsync()
@@ -20,21 +23,53 @@ namespace TPLDataflowTest
             {
                 MakeCpuHurt(1000 * 1000 * 100);
                 LogMessage(LogLevel.Debug, $"TransformMany {d}");
-                return new List<double> {d, d * 10, d * 100, d * 1000, d * 10000, d * 100000};
+                var result = new List<double>();
+                for (var i = 0; i < 100; ++i)
+                {
+                    result.Add(d);
+                }
+                return result;
             });
 
-            var transformDoubleToIntBlock = new TransformBlock<double, int>(d =>
+            var transformDoubleToIntBlock = new TransformBlock<double, int>(async d =>
             {
-                MakeCpuHurt(1000 * 1000 * 300);
-                LogMessage(LogLevel.Debug, $"Transform {d}");
+                LogMessage(LogLevel.Trace, $"Request started {d}");
+                using (var client = new HttpClient())
+                {
+                    try
+                    {
+                        for (var i = 0; i < 5; ++i)
+                        {
+                            await
+                                client.GetAsync(BaseUri.Replace("PLACEHOLDER",
+                                    new Random().Next(10000, 100000).ToString()));
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        LogException(LogLevel.Warning, ex);
+                    }
+
+                }
+                LogMessage(LogLevel.Trace, $"Request ended {d}");
                 return Convert.ToInt32(d);
             }, new ExecutionDataflowBlockOptions { EnsureOrdered = true, MaxDegreeOfParallelism = DataflowBlockOptions.Unbounded });
 
             var computeAndPrintActionBlock = new ActionBlock<int>(number =>
             {
-                MakeCpuHurt(1000* 1000 * 10);
+                MakeCpuHurt(1000* 1000 * 2);
                 LogMessage(LogLevel.Debug, $"Action {number}");
             }, new ExecutionDataflowBlockOptions {EnsureOrdered = true, MaxDegreeOfParallelism = 1});
+
+            var timer = new Timer(2000);
+            timer.Elapsed += (sender, args) =>
+            {
+                var firstQueueStr = $"\n{doubleSourceBlock.InputCount} {doubleSourceBlock.OutputCount}";
+                var secondQueueStr = $"\n{transformDoubleToIntBlock.InputCount} {transformDoubleToIntBlock.OutputCount}";
+                var thirdQueueStr = $"\n{computeAndPrintActionBlock.InputCount}";
+                LogMessage(LogLevel.Info, $"QUEUES: {firstQueueStr}{secondQueueStr}{thirdQueueStr}");
+            };
+            timer.Start();
 
             doubleSourceBlock.LinkTo(transformDoubleToIntBlock);
             transformDoubleToIntBlock.LinkTo(computeAndPrintActionBlock);
@@ -54,11 +89,12 @@ namespace TPLDataflowTest
             //await firstCompletion;
             //await secondCompletion;
             await lastCompletion;
+            timer.Stop();
         }
 
         private static void InitLoggers()
         {
-            Logger.Level = LogLevel.Trace;
+            Logger.Level = LogLevel.Debug;
             Logger.RegisterReceiver(new ColouredConsoleLogger());
         }
 
@@ -73,5 +109,6 @@ namespace TPLDataflowTest
         }
 
         private static void LogMessage(LogLevel level, string message) => Logger.LogEntry("TPL TEST", level, message);
+        private static void LogException(LogLevel level, Exception exception) => Logger.LogException("TPL TEST", level, exception);
     }
 }
